@@ -60,36 +60,88 @@ object Infer {
     }
   }
 
-  def inT(s: String, t: Type): Boolean = t match {
-    case TypeVar(x) => x == s
+  def inT(s: TypeVar, t: Type): Boolean = t match {
+    case tpe@TypeVar(_) => tpe == s
     case FunType(t1, t2) => inT(s, t1) || inT(s, t2)
     case _ => false
   }
 
-  def subst(x: String, t: Type, f: Type) = f match {
-    case TypeVar(s) if s == x => t
+  def subst(x: TypeVar, t: Type, f: Type): Type = f match {
+    case tpe@TypeVar(_) if tpe == x => t
+    case FunType(tp1, tp2) => {
+      val tr1 = if(tp1 == x) subst(x, t, tp1) else tp1
+      val tr2 = if(tp2 == x) subst(x, t, tp2) else tp2
+      FunType(tr1, tr2)
+    }
     case s => s
   }
 
   def unify(c: List[Constraint]): Type => Type = c match {
-    case x :: xs => x match {
-      case (s, t) if s == t => unify(xs)
-      case (_@TypeVar(x), t) => {
-        if(!inT(x, t))
-          unify(xs.map( p => (subst(x, t, p._1), subst(x, t, p._2)) ))
-        else
-          throw new TypeError("Unification error, s in t")
-      }
-      case (s, _@TypeVar(x)) => {
-        if(!inT(x, s))
-          unify(xs.map( p => (subst(x, s, p._1), subst(x, s, p._2)) ))
-        else
-          throw new TypeError("Unification error, s in t")
-      }
-      case (s@FunType(s1, s2), t@FunType(t1, t2)) => {
-        // TODO
+    case x :: xs => {
+      // println(x._1 + " = " + x._2)
+      x match {
+        case (s, t) if s == t => {
+          unify(xs)
+        }
+        case (s@TypeVar(_), t) => {
+          if(!inT(s, t)) {
+            val sub = unify(xs.map( p => (subst(s, t, p._1), subst(s, t, p._2)) ))
+
+
+            def self(tpe: Type): Type = {
+              // println("resolving: "+tpe+" in augmentation ("+s+" = "+t+")")
+              tpe match {
+                case tpe1 if tpe1 == s => sub(t)
+                case FunType(tpe1, tpe2) => FunType(self(tpe1), self(tpe2))
+                case _ => sub(tpe)
+              }
+            }
+            self
+          }
+          else
+            throw new TypeError("Unification error, s in t")
+        }
+        case (s, t@TypeVar(_)) => {
+          if (!inT(t, s)) {
+            val sub = unify(xs.map(p => (subst(t, s, p._1), subst(t, s, p._2))))
+
+            def self(tpe: Type): Type = {
+              // println("resolving: "+tpe+" in augmentation ("+s+" = "+t+")")
+              tpe match {
+                case tpe1 if tpe1 == t => sub(s)
+                case FunType(tpe1, tpe2) => FunType(self(tpe1), self(tpe2))
+                case _ => sub(tpe)
+              }
+            }
+            self
+          }
+          else
+            throw new TypeError("Unification error, t in s")
+        }
+        case (s@FunType(s1, s2), t@FunType(t1, t2)) => {
+          val sub = unify( (s1, t1) :: (s2, t2) :: xs)
+
+          (tpe: Type) => {
+            // println("resolving: "+tpe+" in augmentation ("+s+" = "+t+")")
+            tpe match {
+              case FunType(tpe1, tpe2) => FunType(sub(tpe1), sub(tpe2))
+              case _ => sub(tpe)
+            }
+          }
+
+        }
+        case _ => throw new TypeError("Cannot satisfy constraint"+x)
       }
     }
-    case Nil => ???
+    case Nil => (t: Type) => {
+      // println("resolving: "+t+" in base case")
+      def self(tpe: Type): Type = tpe match {
+        case NatType => tpe
+        case BoolType => tpe
+        case FunType(tp1, tp2) => FunType(self(tp1), self(tp2))
+        case _ => throw new TypeError("Sorry bro, don't know about "+tpe)
+      }
+      self(t)
+    }
   }
 }
