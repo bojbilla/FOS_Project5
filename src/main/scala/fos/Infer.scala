@@ -1,5 +1,7 @@
 package fos
 
+import java.lang.reflect.Array
+
 object Infer {
   case class TypeScheme(params: List[TypeVar], tp: Type)
   type Env = List[(String, TypeScheme)]
@@ -10,10 +12,27 @@ object Infer {
 
   object getFreshTypeVar {
     val counter = Stream.from(1).iterator
-    def apply () = "T"+counter.next
+    def apply (x: String) = x+"@T"+counter.next
     override def toString = throw new UnsupportedOperationException
   }
 
+  object getFreshVar {
+    val counter = Stream.from(1).iterator
+    def apply (x: String) = x+"_"+counter.next
+    override def toString = throw new UnsupportedOperationException
+  }
+
+  // Substitutes Var(x) by Var(y) in term t
+  def substVar(x: String, y: String, t: Term): Term = t match {
+    case Pred(t1) => Pred(substVar(x, y, t1))
+    case Succ(t1) => Succ(substVar(x, y, t1))
+    case IsZero(t1) => IsZero(substVar(x, y, t1))
+    case If(t1, t2, t3) => If(substVar(x, y, t1), substVar(x, y, t2), substVar(x, y, t3))
+    case Var(x1) if x1 == x => Var(y)
+    case Abs(x1, tp, t1) if x1 != x => Abs(x1, tp, substVar(x, y, t1))
+    case App(t1, t2) => App(substVar(x, y, t1), substVar(x, y, t2))
+    case _ => t
+  }
 
   def collect(env: Env, t: Term): (Type, List[Constraint]) = t match {
     case True() => (BoolType, Nil)
@@ -42,20 +61,23 @@ object Infer {
       (myT.tp, Nil /* TODO */)
     }
     case Abs(x, _@EmptyTypeTree(), t1) => {
-      val freshType = TypeVar(getFreshTypeVar())
+      // pessimistically rename all bound variables to avoid name collisions
+      val freshVar = getFreshVar(x)
+      val freshType = TypeVar(getFreshTypeVar(freshVar))
       val scheme = TypeScheme(Nil /* TODO */, freshType)
-      val (myT2, myC) = collect((x, scheme) :: env, t1)
+      val (myT2, myC) = collect((freshVar, scheme) :: env, substVar(x, freshVar, t1))
       (FunType(freshType, myT2), myC)
     }
     case Abs(x, tp, t1) => {
+      val freshVar = getFreshVar(x)
       val scheme = TypeScheme(Nil /* TODO */, tp.tpe)
-      val (myT2, myC) = collect((x, scheme) :: env, t1)
+      val (myT2, myC) = collect((freshVar, scheme) :: env, substVar(x, freshVar, t1))
       (FunType(tp.tpe, myT2), myC)
     }
     case App(t1, t2) => {
       val (myT1, myC1) = collect(env, t1)
       val (myT2, myC2) = collect(env, t2)
-      val freshType = TypeVar(getFreshTypeVar())
+      val freshType = TypeVar(getFreshTypeVar("fn_app"))
       (freshType, (myT1, FunType(myT2, freshType)) :: myC1 ::: myC2)
     }
   }
@@ -66,11 +88,11 @@ object Infer {
     case _ => false
   }
 
-  def subst(x: TypeVar, t: Type, f: Type): Type = f match {
+  def substType(x: TypeVar, t: Type, f: Type): Type = f match {
     case tpe@TypeVar(_) if tpe == x => t
     case FunType(tp1, tp2) => {
-      val tr1 = if(tp1 == x) subst(x, t, tp1) else tp1
-      val tr2 = if(tp2 == x) subst(x, t, tp2) else tp2
+      val tr1 = if(tp1 == x) substType(x, t, tp1) else tp1
+      val tr2 = if(tp2 == x) substType(x, t, tp2) else tp2
       FunType(tr1, tr2)
     }
     case s => s
@@ -85,7 +107,7 @@ object Infer {
         }
         case (s@TypeVar(_), t) => {
           if(!inT(s, t)) {
-            val sub = unify(xs.map( p => (subst(s, t, p._1), subst(s, t, p._2)) ))
+            val sub = unify(xs.map( p => (substType(s, t, p._1), substType(s, t, p._2)) ))
 
 
             def self(tpe: Type): Type = {
@@ -103,7 +125,7 @@ object Infer {
         }
         case (s, t@TypeVar(_)) => {
           if (!inT(t, s)) {
-            val sub = unify(xs.map(p => (subst(t, s, p._1), subst(t, s, p._2))))
+            val sub = unify(xs.map(p => (substType(t, s, p._1), substType(t, s, p._2))))
 
             def self(tpe: Type): Type = {
               // println("resolving: "+tpe+" in augmentation ("+s+" = "+t+")")
@@ -130,7 +152,7 @@ object Infer {
           }
 
         }
-        case _ => throw new TypeError("Cannot satisfy constraint"+x)
+        case _ => throw new TypeError("Cannot satisfy constraint "+x._1+" = "+x._2)
       }
     }
     case Nil => (t: Type) => {
@@ -139,7 +161,7 @@ object Infer {
         case NatType => tpe
         case BoolType => tpe
         case FunType(tp1, tp2) => FunType(self(tp1), self(tp2))
-        case _ => throw new TypeError("Sorry bro, don't know about "+tpe)
+        case _ => throw new TypeError("No type found for type variable "+tpe)
       }
       self(t)
     }
