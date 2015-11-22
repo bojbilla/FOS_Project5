@@ -34,6 +34,13 @@ object Infer {
     case _ => t
   }
 
+  def instanciate(scheme: TypeScheme): Type = scheme.params match {
+    case x :: xs =>
+      val fresh = getFreshTypeVar(x.name)
+      instanciate(TypeScheme(xs, substType(x, TypeVar(fresh), scheme.tp)))
+    case Nil => scheme.tp
+  }
+
   def collect(env: Env, t: Term): (Type, List[Constraint]) = t match {
     case True() => (BoolType, Nil)
     case False() => (BoolType, Nil)
@@ -58,19 +65,19 @@ object Infer {
     }
     case Var(x) if env.toMap.contains(x) => {
       val myT = env.toMap.getOrElse(x, throw new RuntimeException("cannot happen"))
-      (myT.tp, Nil /* TODO */)
+      (myT.tp, Nil)
     }
     case Abs(x, _@EmptyTypeTree(), t1) => {
       // pessimistically rename all bound variables to avoid name collisions
       val freshVar = getFreshVar(x)
       val freshType = TypeVar(getFreshTypeVar(freshVar))
-      val scheme = TypeScheme(Nil /* TODO */, freshType)
+      val scheme = TypeScheme(freshType :: Nil, freshType)
       val (myT2, myC) = collect((freshVar, scheme) :: env, substVar(x, freshVar, t1))
       (FunType(freshType, myT2), myC)
     }
     case Abs(x, tp, t1) => {
       val freshVar = getFreshVar(x)
-      val scheme = TypeScheme(Nil /* TODO */, tp.tpe)
+      val scheme = TypeScheme(Nil, tp.tpe)
       val (myT2, myC) = collect((freshVar, scheme) :: env, substVar(x, freshVar, t1))
       (FunType(tp.tpe, myT2), myC)
     }
@@ -80,6 +87,9 @@ object Infer {
       val freshType = TypeVar(getFreshTypeVar("fn_app"))
       (freshType, (myT1, FunType(myT2, freshType)) :: myC1 ::: myC2)
     }
+    case Let(x, tp, v, t) => {
+      collect(env, App(Abs(x, tp, t), v))
+    }
   }
 
   def inT(s: TypeVar, t: Type): Boolean = t match {
@@ -88,6 +98,7 @@ object Infer {
     case _ => false
   }
 
+  /* Substitutes x by t in f */
   def substType(x: TypeVar, t: Type, f: Type): Type = f match {
     case tpe@TypeVar(_) if tpe == x => t
     case FunType(tp1, tp2) => {
