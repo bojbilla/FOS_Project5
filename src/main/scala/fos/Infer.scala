@@ -43,6 +43,17 @@ object Infer {
     case Nil => scheme.tp
   }
 
+  // Returns a type scheme whose abstracted variables are variables in tpe which do not appear in env
+  def mkPolymorphicScheme(env: Env, tpe: Type): TypeScheme = tpe match {
+    case t@TypeVar(x) if !env.toMap.contains(x) => TypeScheme(t :: Nil, tpe)
+    case t@TypeVar(_) => TypeScheme(Nil, tpe)
+    case FunType(t1, t2) =>
+      val s1 = mkPolymorphicScheme(env, t1)
+      val s2 = mkPolymorphicScheme(env, t2)
+      TypeScheme(s1.params ::: s2.params, tpe)
+    case _ => TypeScheme(Nil, tpe)
+  }
+
   def collect(env: Env, t: Term): (Type, List[Constraint]) = t match {
     case True() => (BoolType, Nil)
     case False() => (BoolType, Nil)
@@ -60,15 +71,16 @@ object Infer {
       val (myT1, myC1) = collect(env, t1)
       val (myT2, myC2) = collect(env, t2)
       val (myT3, myC3) = collect(env, t3)
-      (myT2, (myT1, BoolType) :: (myT2, myT3) :: myC1 ::: myC2 ::: myC3)
+      (myT2, (myT1, BoolType) ::(myT2, myT3) :: myC1 ::: myC2 ::: myC3)
     case Var(x) if env.toMap.contains(x) =>
       val myT = env.toMap.getOrElse(x, throw new RuntimeException("cannot happen"))
-      (myT.tp, Nil)
+      (instanciate(myT), Nil)
+    case Var(x) => throw new TypeError("Undefined variable "+x)
     case Abs(x, _@EmptyTypeTree(), t1) =>
       // pessimistically rename all bound variables to avoid name collisions
       val freshVar = getFreshVar(x)
       val freshType = TypeVar(getFreshTypeVar(freshVar))
-      val scheme = TypeScheme(freshType :: Nil, freshType)
+      val scheme = TypeScheme(Nil, freshType)
       val (myT2, myC) = collect((freshVar, scheme) :: env, substVar(x, freshVar, t1))
       (FunType(freshType, myT2), myC)
     case Abs(x, tp, t1) =>
@@ -82,7 +94,24 @@ object Infer {
       val freshType = TypeVar(getFreshTypeVar("fn_app"))
       (freshType, (myT1, FunType(myT2, freshType)) :: myC1 ::: myC2)
     case Let(x, tp, v, t1) =>
-      collect(env, App(Abs(x, tp, t1), v))
+      // 1. We type the right hand side v obtaining a type S and a set of constraints C.
+      val (myS, myC) = collect(env, v)
+
+      // 2. We use unification on C and apply the result to S to find its first approximation as type.
+      // At this point, the substitution we found should be applied to the current environment too,
+      // since we have committed to a set of bindings between type variables and types! Let’s call this new type T
+      val approxT = unify(myC)(myS)
+
+      // 3. We generalize some type variables inside T and obtain a type scheme.
+      // (ndlr; get the set of type variables in approxT and subtract the set of type variables in env, this goes in the list)
+      val myT = mkPolymorphicScheme(env, approxT)
+
+      // 4. We extend the environment with a binding from x to its type scheme
+      // 5. We typecheck t with the new environment
+      collect((x, myT) :: env, t1)
+
+      // For reference: simple sugar expansion
+      // collect( env, App(Abs(x, tp, t1), v))
   }
 
   def inT(s: TypeVar, t: Type): Boolean = t match {
