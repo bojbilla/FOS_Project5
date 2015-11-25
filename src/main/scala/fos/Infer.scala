@@ -31,6 +31,8 @@ object Infer {
     case Var(x1) if x1 == x => Var(y)
     case Abs(x1, tp, t1) if x1 != x => Abs(x1, tp, substVar(x, y, t1))
     case App(t1, t2) => App(substVar(x, y, t1), substVar(x, y, t2))
+    case Let(x1, tp, v, t1) if x1 != x => Let(x1, tp, substVar(x, y, v), substVar(x, y, t1))
+    case Let(x1, tp, v, t1) /* if x1 == x */ => Let(x1, tp, substVar(x, y ,v), t1)
     case _ => t
   }
 
@@ -45,51 +47,42 @@ object Infer {
     case True() => (BoolType, Nil)
     case False() => (BoolType, Nil)
     case Zero() => (NatType, Nil)
-    case Pred(t1) => {
+    case Pred(t1) =>
       val (myT, myC) = collect(env, t1)
       (NatType, (myT, NatType) :: myC)
-    }
-    case Succ(t1) => {
+    case Succ(t1) =>
       val (myT, myC) = collect(env, t1)
       (NatType, (myT, NatType) :: myC)
-    }
-    case IsZero(t1) => {
+    case IsZero(t1) =>
       val (myT, myC) = collect(env, t1)
       (BoolType, (myT, NatType) :: myC)
-    }
-    case If(t1, t2, t3) => {
+    case If(t1, t2, t3) =>
       val (myT1, myC1) = collect(env, t1)
       val (myT2, myC2) = collect(env, t2)
       val (myT3, myC3) = collect(env, t3)
       (myT2, (myT1, BoolType) :: (myT2, myT3) :: myC1 ::: myC2 ::: myC3)
-    }
-    case Var(x) if env.toMap.contains(x) => {
+    case Var(x) if env.toMap.contains(x) =>
       val myT = env.toMap.getOrElse(x, throw new RuntimeException("cannot happen"))
       (myT.tp, Nil)
-    }
-    case Abs(x, _@EmptyTypeTree(), t1) => {
+    case Abs(x, _@EmptyTypeTree(), t1) =>
       // pessimistically rename all bound variables to avoid name collisions
       val freshVar = getFreshVar(x)
       val freshType = TypeVar(getFreshTypeVar(freshVar))
       val scheme = TypeScheme(freshType :: Nil, freshType)
       val (myT2, myC) = collect((freshVar, scheme) :: env, substVar(x, freshVar, t1))
       (FunType(freshType, myT2), myC)
-    }
-    case Abs(x, tp, t1) => {
+    case Abs(x, tp, t1) =>
       val freshVar = getFreshVar(x)
       val scheme = TypeScheme(Nil, tp.tpe)
       val (myT2, myC) = collect((freshVar, scheme) :: env, substVar(x, freshVar, t1))
       (FunType(tp.tpe, myT2), myC)
-    }
-    case App(t1, t2) => {
+    case App(t1, t2) =>
       val (myT1, myC1) = collect(env, t1)
       val (myT2, myC2) = collect(env, t2)
       val freshType = TypeVar(getFreshTypeVar("fn_app"))
       (freshType, (myT1, FunType(myT2, freshType)) :: myC1 ::: myC2)
-    }
-    case Let(x, tp, v, t) => {
-      collect(env, App(Abs(x, tp, t), v))
-    }
+    case Let(x, tp, v, t1) =>
+      collect(env, App(Abs(x, tp, t1), v))
   }
 
   def inT(s: TypeVar, t: Type): Boolean = t match {
@@ -101,22 +94,20 @@ object Infer {
   /* Substitutes x by t in f */
   def substType(x: TypeVar, t: Type, f: Type): Type = f match {
     case tpe@TypeVar(_) if tpe == x => t
-    case FunType(tp1, tp2) => {
+    case FunType(tp1, tp2) =>
       val tr1 = if(tp1 == x) substType(x, t, tp1) else tp1
       val tr2 = if(tp2 == x) substType(x, t, tp2) else tp2
       FunType(tr1, tr2)
-    }
     case s => s
   }
 
   def unify(c: List[Constraint]): Type => Type = c match {
-    case x :: xs => {
+    case x :: xs =>
       // println(x._1 + " = " + x._2)
       x match {
-        case (s, t) if s == t => {
+        case (s, t) if s == t =>
           unify(xs)
-        }
-        case (s@TypeVar(_), t) => {
+        case (s@TypeVar(_), t) =>
           if(!inT(s, t)) {
             val sub = unify(xs.map( p => (substType(s, t, p._1), substType(s, t, p._2)) ))
 
@@ -133,8 +124,7 @@ object Infer {
           }
           else
             throw new TypeError("Unification error, s in t")
-        }
-        case (s, t@TypeVar(_)) => {
+        case (s, t@TypeVar(_)) =>
           if (!inT(t, s)) {
             val sub = unify(xs.map(p => (substType(t, s, p._1), substType(t, s, p._2))))
 
@@ -150,8 +140,7 @@ object Infer {
           }
           else
             throw new TypeError("Unification error, t in s")
-        }
-        case (s@FunType(s1, s2), t@FunType(t1, t2)) => {
+        case (s@FunType(s1, s2), t@FunType(t1, t2)) =>
           val sub = unify( (s1, t1) :: (s2, t2) :: xs)
 
           (tpe: Type) => {
@@ -161,18 +150,15 @@ object Infer {
               case _ => sub(tpe)
             }
           }
-
-        }
         case _ => throw new TypeError("Cannot satisfy constraint "+x._1+" = "+x._2)
       }
-    }
     case Nil => (t: Type) => {
       // println("resolving: "+t+" in base case")
       def self(tpe: Type): Type = tpe match {
         case NatType => tpe
         case BoolType => tpe
         case FunType(tp1, tp2) => FunType(self(tp1), self(tp2))
-        case _ => throw new TypeError("No type found for type variable "+tpe)
+        case tp => tp
       }
       self(t)
     }
